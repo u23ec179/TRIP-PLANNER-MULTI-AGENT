@@ -1,0 +1,18 @@
+.env
+
+# Virtual environments
+langgraph_env3/
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Streamlit
+.streamlit/secrets.toml
