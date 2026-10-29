@@ -1,8 +1,99 @@
 import os
+import unicodedata
+from html import escape
+from io import BytesIO
 import streamlit as st
 from datetime import datetime
 from langchain_core.messages import HumanMessage
 from main import app
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+
+def _pdf_safe_text(text: str) -> str:
+    text = (
+        text.replace("₹", "INR ")
+        .replace("€", "EUR ")
+        .replace("£", "GBP ")
+        .replace("•", "- ")
+    )
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
+def _add_pdf_section(story, heading, content, heading_style, body_style):
+    story.append(Paragraph(escape(heading), heading_style))
+    for line in content.splitlines():
+        line = _pdf_safe_text(line).strip()
+        if line:
+            line = line.lstrip("#").strip().replace("**", "").replace("`", "")
+            story.append(Paragraph(escape(line), body_style))
+        else:
+            story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 4 * mm))
+
+
+def _build_travel_plan_pdf(user_query, thread_id, generated_at, collected) -> bytes:
+    styles = getSampleStyleSheet()
+    styles["Title"].textColor = colors.HexColor("#1a3a5c")
+    heading_style = ParagraphStyle(
+        "TripSectionHeading",
+        parent=styles["Heading2"],
+        textColor=colors.HexColor("#1a6bbf"),
+        spaceBefore=5 * mm,
+    )
+    body_style = ParagraphStyle(
+        "TripBody",
+        parent=styles["BodyText"],
+        leading=15,
+        spaceAfter=3,
+    )
+    story = [
+        Paragraph("Travel Plan", styles["Title"]),
+        Spacer(1, 4 * mm),
+        Paragraph(f"<b>Query:</b> {escape(_pdf_safe_text(user_query))}", body_style),
+        Paragraph(
+            f"<b>Generated:</b> {generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
+            body_style,
+        ),
+        Paragraph(f"<b>User ID:</b> {escape(_pdf_safe_text(thread_id))}", body_style),
+        Spacer(1, 5 * mm),
+    ]
+    _add_pdf_section(
+        story, "Flight Information", collected["flight_results"] or "N/A",
+        heading_style, body_style,
+    )
+    _add_pdf_section(
+        story, "Hotel Information", collected["hotel_results"] or "N/A",
+        heading_style, body_style,
+    )
+    _add_pdf_section(
+        story, "Itinerary", collected["itinerary"] or "N/A",
+        heading_style, body_style,
+    )
+    _add_pdf_section(
+        story, "Final Travel Plan", collected["final_response"] or "N/A",
+        heading_style, body_style,
+    )
+    story.append(
+        Paragraph(f"<b>LLM Calls:</b> {collected['llm_calls']}", body_style)
+    )
+
+    pdf_buffer = BytesIO()
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=A4,
+        rightMargin=20 * mm,
+        leftMargin=20 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        title="Travel Plan",
+    )
+    document.build(story)
+    return pdf_buffer.getvalue()
+
 
 st.set_page_config(
     page_title="AI Travel Booking System",
@@ -449,46 +540,23 @@ if generate:
                         unsafe_allow_html=True)
 
         # Save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"travel_plan_{timestamp}.md"
+        generated_at = datetime.now()
+        timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
+        filename = f"travel_plan_{timestamp}.pdf"
         save_dir = os.path.join(os.path.dirname(__file__), "travel_plans")
         os.makedirs(save_dir, exist_ok=True)
 
-        file_content = f"""# Travel Plan
-**Query:** {user_query}
-**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-**User ID:** {thread_id}
+        pdf_content = _build_travel_plan_pdf(
+            user_query, thread_id, generated_at, collected
+        )
 
----
-
-## ✈️ Flight Information
-{collected['flight_results'] or 'N/A'}
-
----
-
-## 🏨 Hotel Information
-{collected['hotel_results'] or 'N/A'}
-
----
-
-## 🗓️ Itinerary
-{collected['itinerary'] or 'N/A'}
-
----
-
-## 🧠 Final Travel Plan
-{collected['final_response'] or 'N/A'}
-
----
-*LLM Calls: {collected['llm_calls']}*
-"""
-        with open(os.path.join(save_dir, filename), "w", encoding="utf-8") as f:
-            f.write(file_content)
+        with open(os.path.join(save_dir, filename), "wb") as f:
+            f.write(pdf_content)
 
         dl_col, info_col = st.columns([1, 3])
         with dl_col:
-            st.download_button("⬇️ Download Plan", data=file_content,
-                               file_name=filename, mime="text/markdown",
+            st.download_button("⬇️ Download Plan", data=pdf_content,
+                               file_name=filename, mime="application/pdf",
                                use_container_width=True)
         with info_col:
             st.markdown(f"<div class='save-bar'>📁 Auto-saved → <code>travel_plans/{filename}</code></div>",
